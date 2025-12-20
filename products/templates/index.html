@@ -1,51 +1,333 @@
 <!DOCTYPE html>
 <html>
+<head>
+  <title>Product Importer</title>
+  <style>
+    body { font-family: Arial, sans-serif; }
+    table { border-collapse: collapse; margin-top: 10px; }
+    th, td { border: 1px solid #ccc; padding: 6px; }
+    input, select, button { margin: 4px; }
+
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 3px solid #ccc;
+      border-top: 3px solid #333;
+      border-radius: 50%;
+      animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin { 100% { transform: rotate(360deg); } }
+
+    .hidden { display: none; }
+
+    progress { width: 300px; height: 18px; }
+  </style>
+</head>
+
 <body>
+
+<!-- ================= CSV UPLOAD ================= -->
+
 <h2>CSV Upload</h2>
 
-<input type="file" id="file">
+<input type="file" id="fileInput">
 <button onclick="upload()">Upload</button>
+<button id="retryBtn" onclick="retry()" class="hidden">Retry</button>
 
-<p id="progress"></p>
+<p id="uploadStatus"></p>
 
-<button onclick="load()">Load Products</button>
-<button onclick="clearAll()">Delete All</button>
+<progress id="progressBar" value="0" max="100" class="hidden"></progress>
+<span id="percent"></span>
+<span id="uploadSpinner" class="spinner hidden"></span>
 
-<pre id="data"></pre>
+<hr>
+
+<!-- ================= PRODUCT MANAGEMENT ================= -->
+
+<h2>Product Management</h2>
+
+<!-- FILTERS -->
+<input id="fSku" placeholder="Filter SKU">
+<input id="fName" placeholder="Filter Name">
+<input id="fDesc" placeholder="Filter Description">
+<select id="fActive">
+  <option value="">Any</option>
+  <option value="true">Active</option>
+  <option value="false">Inactive</option>
+</select>
+<button onclick="applyFilters()">Apply Filters</button>
+<span id="loadSpinner" class="spinner hidden"></span>
+<button onclick="clearFilters()">load products</button>
+
+<hr>
+
+<!-- CREATE / EDIT FORM -->
+<h3 id="formTitle">Create Product</h3>
+
+<input id="skuInput" placeholder="SKU"><br>
+<input id="nameInput" placeholder="Name"><br>
+<input id="descInput" placeholder="Description"><br>
+<label>
+  Active <input type="checkbox" id="activeInput" checked>
+</label><br>
+
+<button onclick="saveProduct()">Save</button>
+<button onclick="resetForm()">Cancel</button>
+
+<hr>
+
+<!-- BULK DELETE -->
+<button onclick="deleteAllProducts()">❌ Delete All Products</button>
+<span id="bulkSpinner" class="spinner hidden"></span>
+<span id="bulkStatus"></span>
+
+<hr>
+
+<!-- PRODUCT TABLE -->
+<table>
+  <thead>
+    <tr>
+      <th>SKU</th>
+      <th>Name</th>
+      <th>Description</th>
+      <th>Active</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<!-- PAGINATION -->
+<button onclick="prevPage()">Prev</button>
+<span id="page"></span>
+<button onclick="nextPage()">Next</button>
 
 <script>
-function upload() {
-  let fd = new FormData();
-  fd.append("file", file.files[0]);
+/* ================= GLOBAL STATE ================= */
 
-  fetch("/imports/upload/", { method:"POST", body:fd })
-    .then(r=>r.json())
-    .then(d=>track(d.job_id));
+let currentPage = 1;
+let editingId = null;
+let productCache = {};
+let lastJobId = null;
+
+/* ================= CSV UPLOAD ================= */
+
+function upload() {
+  if (!fileInput.files.length) {
+    alert("Please select a CSV file");
+    return;
+  }
+
+  retryBtn.classList.add("hidden");
+  uploadSpinner.classList.remove("hidden");
+  progressBar.classList.remove("hidden");
+  progressBar.value = 0;
+  percent.innerText = "";
+  uploadStatus.innerText = "Uploading file...";
+
+  let fd = new FormData();
+  fd.append("file", fileInput.files[0]);
+
+  fetch("/imports/upload/", { method: "POST", body: fd })
+    .then(r => {
+      if (!r.ok) throw new Error("Upload failed");
+      return r.json();
+    })
+    .then(d => {
+      lastJobId = d.job_id;
+      track(d.job_id);
+    })
+    .catch(err => fail(err.message));
+}
+
+function retry() {
+  retryBtn.classList.add("hidden");
+  upload();
 }
 
 function track(id) {
-  let t = setInterval(()=>{
-    fetch(`/imports/status/${id}/`)
-      .then(r=>r.json())
-      .then(d=>{
-        progress.innerText = `${d.status}: ${d.processed}/${d.total}`;
-        if (d.status === "COMPLETED" || d.status === "FAILED")
-          clearInterval(t);
+  uploadStatus.innerText = "Importing CSV...";
+
+  let timer = setInterval(function () {
+    fetch("/imports/status/" + id + "/")
+      .then(r => r.json())
+      .then(d => {
+        if (d.total > 0) {
+          let pct = Math.floor((d.processed / d.total) * 100);
+          progressBar.value = pct;
+          percent.innerText = pct + "%";
+        }
+
+        uploadStatus.innerText = d.status;
+
+        if (d.status === "COMPLETED") {
+          clearInterval(timer);
+          uploadSpinner.classList.add("hidden");
+          uploadStatus.innerText = "✅ Import Complete";
+          loadProducts();
+        }
+
+        if (d.status === "FAILED") {
+          clearInterval(timer);
+          fail(d.error || "Import failed");
+        }
+      })
+      .catch(function () {
+        clearInterval(timer);
+        fail("Error fetching import status");
       });
   }, 1000);
 }
 
-function load() {
-  fetch("/products/")
-    .then(r=>r.json())
-    .then(d=>data.innerText = JSON.stringify(d,null,2));
+function fail(message) {
+  uploadSpinner.classList.add("hidden");
+  uploadStatus.innerText = "❌ " + message;
+  retryBtn.classList.remove("hidden");
 }
 
-function clearAll() {
-  if (!confirm("Delete all products?")) return;
-  fetch("/products/delete-all/")
-    .then(()=>alert("Deleted"));
+/* ================= PRODUCT MANAGEMENT ================= */
+function applyFilters() {
+  currentPage = 1;   // reset pagination
+  loadProducts();
 }
+
+function clearFilters() {
+  // Clear filter inputs
+  fSku.value = "";
+  fName.value = "";
+  fDesc.value = "";
+  fActive.value = "";
+
+  currentPage = 1;   // reset pagination
+  loadProducts();
+}
+function loadProducts() {
+  loadSpinner.classList.remove("hidden");
+
+  let params = new URLSearchParams({
+    page: currentPage,
+    sku: fSku.value,
+    name: fName.value,
+    description: fDesc.value,
+    active: fActive.value
+  });
+
+  fetch("/products/?" + params.toString())
+    .then(r => r.json())
+    .then(d => {
+      rows.innerHTML = "";
+      productCache = {};
+
+      for (let i = 0; i < d.products.length; i++) {
+        let p = d.products[i];
+        productCache[p.id] = p;
+
+        rows.innerHTML +=
+          "<tr>" +
+            "<td>" + p.sku + "</td>" +
+            "<td>" + p.name + "</td>" +
+            "<td>" + p.description + "</td>" +
+            "<td>" + p.active + "</td>" +
+            "<td>" +
+              "<button onclick='editProduct(" + p.id + ")'>Edit</button> " +
+              "<button onclick='deleteProduct(" + p.id + ")'>Delete</button>" +
+            "</td>" +
+          "</tr>";
+      }
+
+      page.innerText = "Page " + d.page + " / " + d.total_pages;
+    })
+    .catch(() => alert("Failed to load products"))
+    .finally(() => loadSpinner.classList.add("hidden"));
+}
+
+function editProduct(id) {
+  let p = productCache[id];
+  if (!p) {
+    alert("Product not found");
+    return;
+  }
+
+  editingId = id;
+  formTitle.innerText = "Edit Product";
+  skuInput.value = p.sku;
+  nameInput.value = p.name;
+  descInput.value = p.description;
+  activeInput.checked = p.active;
+}
+
+function saveProduct() {
+  if (!skuInput.value || !nameInput.value) {
+    alert("SKU and Name are required");
+    return;
+  }
+
+  let data = {
+    sku: skuInput.value,
+    name: nameInput.value,
+    description: descInput.value,
+    active: activeInput.checked
+  };
+
+  let url = "/products/create/";
+  if (editingId) url = "/products/update/" + editingId + "/";
+
+  fetch(url, { method: "POST", body: JSON.stringify(data) })
+    .then(() => {
+      resetForm();
+      loadProducts();
+    })
+    .catch(() => alert("Save failed"));
+}
+
+function deleteProduct(id) {
+  if (!confirm("Delete this product?")) return;
+
+  fetch("/products/delete/" + id + "/", { method: "POST" })
+    .then(loadProducts)
+    .catch(() => alert("Delete failed"));
+}
+
+function deleteAllProducts() {
+  if (!confirm("Are you sure? This cannot be undone.")) return;
+
+  bulkSpinner.classList.remove("hidden");
+  bulkStatus.innerText = "Deleting...";
+
+  fetch("/products/delete-all/", { method: "POST" })
+    .then(() => {
+      bulkStatus.innerText = "✅ All products deleted";
+      loadProducts();
+    })
+    .catch(() => bulkStatus.innerText = "❌ Failed")
+    .finally(() => bulkSpinner.classList.add("hidden"));
+}
+
+function resetForm() {
+  editingId = null;
+  formTitle.innerText = "Create Product";
+  skuInput.value = "";
+  nameInput.value = "";
+  descInput.value = "";
+  activeInput.checked = true;
+}
+
+function prevPage() {
+  if (currentPage > 1) {
+    currentPage--;
+    loadProducts();
+  }
+}
+
+function nextPage() {
+  currentPage++;
+  loadProducts();
+}
+
+
 </script>
+
 </body>
 </html>
