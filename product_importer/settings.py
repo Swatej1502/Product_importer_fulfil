@@ -74,13 +74,17 @@ WSGI_APPLICATION = 'product_importer.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/6.0/ref/settings/#databases
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
 
 DATABASES = {
     'default': {
         'ENGINE': 'django.db.backends.postgresql',
         'NAME': 'acme',
         'USER': 'acme',
-        'PASSWORD': 'Swatej@1502',
+        'PASSWORD': os.getenv("DB_PASSWORD"),
         'HOST': 'localhost',
         'PORT': 5432,
     }

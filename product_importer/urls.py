@@ -25,4 +25,5 @@ urlpatterns = [
     path("", index),
     path("imports/", include("imports.urls")),
     path("products/", include("products.urls")),
+    path("webhooks/", include("webhooks.urls")),
 ]
